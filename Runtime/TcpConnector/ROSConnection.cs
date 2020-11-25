@@ -1,9 +1,8 @@
-using RosMessageGeneration;
 using System;
 using System.Collections;
-using System.Collections.Generic;
 using System.Net.Sockets;
 using System.Text;
+using RosMessageGeneration;
 using UnityEngine;
 
 public class ROSConnection : MonoBehaviour
@@ -16,6 +15,9 @@ public class ROSConnection : MonoBehaviour
 
     public int awaitDataMaxRetries = 10;
     public float awaitDataSleepSeconds = 1.0f;
+
+    TcpClient client;
+    NetworkStream networkStream;
 
     /// <summary>
     ///    Given some input values, fill a byte array in the desired format to use with
@@ -73,23 +75,57 @@ public class ROSConnection : MonoBehaviour
         return messageBuffer;
     }
 
+    public void Start()
+    {
+
+        client = new TcpClient();
+            
+        Connect();
+                
+    }
+
+    protected void Connect()
+    {
+        Debug.Log("will connect to tcp endpoint");
+        if (client.Connected)
+            client.Close();
+
+            client.Connect(hostName, hostPort);
+        
+            
+            networkStream = client.GetStream();
+            networkStream.ReadTimeout = networkTimeout;
+            Debug.Log("connected");
+    }
+
+    public void Dispose()
+    {        
+            if (client.Connected)
+                client.Close();
+    }
+
     public void Send(string rosTopicName, Message message)
     {
+        if (client == null)
+            return;
+
+        if (!client.Connected)
+            Connect();
+
         try
         {
             // Serialize the message in topic name, message size, and message bytes format
             byte[] messageBytes = GetMessageBytes(rosTopicName, message);
-
-            TcpClient client = new TcpClient();
+            /*client = new TcpClient();
             client.Connect(hostName, hostPort);
-
-            NetworkStream networkStream = client.GetStream();
+        
+            
+            networkStream = client.GetStream();
             networkStream.ReadTimeout = networkTimeout;
-
+*/
             networkStream.Write(messageBytes, 0, messageBytes.Length);
-
-            if (client.Connected)
-                client.Close();
+          /*  if (client.Connected)
+                client.Close();*/
         }
         catch (NullReferenceException e)
         {
@@ -98,6 +134,7 @@ public class ROSConnection : MonoBehaviour
         catch (Exception e)
         {
             Debug.LogError("TCPConnector Exception: " + e);
+            Connect();
         }
     }
 
