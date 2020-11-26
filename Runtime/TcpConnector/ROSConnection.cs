@@ -19,6 +19,8 @@ public class ROSConnection : MonoBehaviour
     TcpClient client;
     NetworkStream networkStream;
 
+    public bool keepConnection = true;
+
     /// <summary>
     ///    Given some input values, fill a byte array in the desired format to use with
     ///     https://github.com/Unity-Technologies/Robotics-Tutorials/tree/master/catkin_ws/src/tcp_endpoint
@@ -77,55 +79,54 @@ public class ROSConnection : MonoBehaviour
 
     public void Start()
     {
-
-        client = new TcpClient();
-            
-        Connect();
-                
+        if (keepConnection)
+        {
+            client = new TcpClient();   
+            Connect();
+        }                
     }
 
     protected void Connect()
     {
-        Debug.Log("will connect to tcp endpoint");
         if (client.Connected)
             client.Close();
 
-            client.Connect(hostName, hostPort);
-        
-            
-            networkStream = client.GetStream();
-            networkStream.ReadTimeout = networkTimeout;
-            Debug.Log("connected");
+        client.Connect(hostName, hostPort);
+        networkStream = client.GetStream();
+        networkStream.ReadTimeout = networkTimeout;
     }
 
     public void Dispose()
     {        
-            if (client.Connected)
-                client.Close();
+        if (client.Connected)
+            client.Close();
     }
 
     public void Send(string rosTopicName, Message message)
     {
-        if (client == null)
+        if (keepConnection && client == null)
             return;
 
-        if (!client.Connected)
+        if (keepConnection && !client.Connected)
             Connect();
 
         try
         {
             // Serialize the message in topic name, message size, and message bytes format
             byte[] messageBytes = GetMessageBytes(rosTopicName, message);
-            /*client = new TcpClient();
-            client.Connect(hostName, hostPort);
-        
             
-            networkStream = client.GetStream();
-            networkStream.ReadTimeout = networkTimeout;
-*/
+            if (!keepConnection)
+            {
+                client = new TcpClient();
+                client.Connect(hostName, hostPort);
+            
+                networkStream = client.GetStream();
+                networkStream.ReadTimeout = networkTimeout;
+            }
+
             networkStream.Write(messageBytes, 0, messageBytes.Length);
-          /*  if (client.Connected)
-                client.Close();*/
+            if (!keepConnection && client.Connected)
+                client.Close();
         }
         catch (NullReferenceException e)
         {
@@ -134,7 +135,6 @@ public class ROSConnection : MonoBehaviour
         catch (Exception e)
         {
             Debug.LogError("TCPConnector Exception: " + e);
-            Connect();
         }
     }
 
