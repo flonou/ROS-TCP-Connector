@@ -25,16 +25,19 @@ public class ROSConnection : MonoBehaviour
     public int awaitDataMaxRetries = 10;
     public float awaitDataSleepSeconds = 1.0f;
 
-    TcpClient client;
-    NetworkStream networkStream;
+    TcpClient persistantClient;
+    NetworkStream persistantNetworkStream;
 
     public bool keepConnection = true;
+    protected bool connecting = false;
 
     static object _lock = new object(); // sync lock 
+    static object _connectionLock = new object(); // sync lock 
     static List<Task> activeConnectionTasks = new List<Task>(); // pending connections
 
     const string ERROR_TOPIC_NAME = "__error";
     const string HANDSHAKE_TOPIC_NAME = "__handshake";
+    const string CONNECTION_PARAM_TOPIC_NAME = "__connection_param";
 
     struct SubscriberCallback
     {
@@ -46,23 +49,16 @@ public class ROSConnection : MonoBehaviour
 
     void Start()
     {
-               
-        if (keepConnection)
-        {
-            Connect();
-        }
         Subscribe<RosUnityError>(ERROR_TOPIC_NAME, RosUnityErrorCallback);
         if (overrideUnityIP != "")
         {
             StartMessageServer(overrideUnityIP, unityPort); // no reason to wait, if we already know the IP
         }
 
-            
- 
+        Send(CONNECTION_PARAM_TOPIC_NAME, new RosUnityConnectionParam(keepConnection));
+        Debug.Log("sent connection parameters to the server");
 
         SendServiceMessage<RosUnityHandshakeResponse>(HANDSHAKE_TOPIC_NAME, new RosUnityHandshakeRequest(overrideUnityIP, (ushort)unityPort), RosUnityHandshakeCallback);
-
-
     }
 
     void RosUnityHandshakeCallback(RosUnityHandshakeResponse response)
@@ -285,48 +281,46 @@ public class ROSConnection : MonoBehaviour
 
     protected void Connect()
     {
-        if (client == null)
-            client = new TcpClient();
-
-        Debug.Log("Connecting ...");
-        if (client.Connected)
-            client.Close();
-
-        client.Connect(hostName, hostPort);
-        networkStream = client.GetStream();
-        networkStream.ReadTimeout = networkTimeout;
-        Debug.Log("Connected");
+        lock(_connectionLock)
+        {
+            if (persistantClient == null || !persistantClient.Connected)
+            {
+                persistantClient = new TcpClient();            
+                Debug.Log("Connecting ...");
+                persistantClient.Connect(hostName, hostPort);
+                persistantNetworkStream = persistantClient.GetStream();
+                persistantNetworkStream.ReadTimeout = networkTimeout;
+                Debug.Log("Connected");
+            }
+        }
     }
-
+    
     public void Dispose()
     {        
-        if (client.Connected)
-            client.Close();
+        if (persistantClient.Connected)
+            persistantClient.Close();
     }
 
     public async void Send(string rosTopicName, Message message)
     {
-        if (keepConnection && (client == null || !client.Connected))
-            Connect();
-
         try
         {
             // Serialize the message in topic name, message size, and message bytes format
             byte[] messageBytes = GetMessageBytes(rosTopicName, message);
-            
-            if (!keepConnection)
+            if (keepConnection)
             {
-                client = new TcpClient();
+                Connect();
+                persistantNetworkStream.Write(messageBytes, 0, messageBytes.Length);
+            } else
+            {
+                TcpClient client = new TcpClient();
                 await client.ConnectAsync(hostName, hostPort);
-            
-                networkStream = client.GetStream();
+                NetworkStream networkStream = client.GetStream();
                 networkStream.ReadTimeout = networkTimeout;
+                networkStream.Write(messageBytes, 0, messageBytes.Length);
+                if (client.Connected)
+                    client.Close();
             }
-
-            networkStream.Write(messageBytes, 0, messageBytes.Length);
-
-            if (!keepConnection && client.Connected)
-                client.Close();
         }
         catch (NullReferenceException e)
         {
@@ -343,19 +337,20 @@ public class ROSConnection : MonoBehaviour
         // Serialize the message in service name, message size, and message bytes format
         byte[] messageBytes = GetMessageBytes(rosServiceName, serviceRequest);
 
-
-        if (!keepConnection)
-        {
-            TcpClient client = new TcpClient();
-            await client.ConnectAsync(hostName, hostPort);
-
-            NetworkStream networkStream = client.GetStream();
-            networkStream.ReadTimeout = networkTimeout;
-        } else if (!client.Connected)
+        NetworkStream networkStream = null;
+        TcpClient client = null;
+        if (keepConnection)
         {
             Connect();
+            client = persistantClient;
+            networkStream = persistantNetworkStream;
+        } else
+        {
+            client = new TcpClient();
+            await client.ConnectAsync(hostName, hostPort);
+            networkStream = client.GetStream();
+            networkStream.ReadTimeout = networkTimeout;
         }
-
         RESPONSE serviceResponse = new RESPONSE();
 
         // Send the message
