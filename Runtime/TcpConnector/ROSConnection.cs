@@ -94,9 +94,15 @@ public class ROSConnection : MonoBehaviour
     protected async Task HandleConnectionAsync(TcpClient tcpClient)
     {
         await Task.Yield();
+        NetworkStream networkStream = tcpClient.GetStream();
         // continue asynchronously on another threads
-
-        ReadMessage(tcpClient.GetStream());
+        do
+        {
+            if (!networkStream.DataAvailable)
+                await Task.Yield();
+                
+            ReadMessage(networkStream);    
+        } while (keepConnection && tcpClient.Connected);        
     }
 
     void ReadMessage(NetworkStream networkStream)
