@@ -8,6 +8,7 @@ using System.Net.Sockets;
 using System.Reflection;
 using System.Text;
 using System.Threading.Tasks;
+using System.Threading;
 using UnityEngine;
 
 public class ROSConnection : MonoBehaviour
@@ -60,7 +61,7 @@ public class ROSConnection : MonoBehaviour
         Subscribe<RosUnityError>(ERROR_TOPIC_NAME, RosUnityErrorCallback);
         if (overrideUnityIP != "")
         {
-            Task.Run(() => StartMessageServer(overrideUnityIP, unityPort)); // no reason to wait, if we already know the IP
+            new Thread(() => StartMessageServer(overrideUnityIP, unityPort)).Start(); // no reason to wait, if we already know the IP
         }
 
         Send(CONNECTION_PARAM_TOPIC_NAME, new RosUnityConnectionParam(keepConnection));
@@ -71,7 +72,7 @@ public class ROSConnection : MonoBehaviour
 
     void RosUnityHandshakeCallback(RosUnityHandshakeResponse response)
     {
-        Task.Run(() => StartMessageServer(response.ip, unityPort));
+        new Thread(() => StartMessageServer(response.ip, unityPort)).Start();
     }
 
     void RosUnityErrorCallback(RosUnityError error)
@@ -106,11 +107,9 @@ public class ROSConnection : MonoBehaviour
         // continue asynchronously on another thread
         do
         {
-            /*if (!networkStream.DataAvailable)
-                await Task.Yield();*/
-                
-            ReadMessage(networkStream);    
-            //await Task.Yield();
+            //Debug.Log("start reading at : " + System.DateTime.Now.Millisecond);
+            ReadMessage(networkStream);   
+            //Debug.Log("       stop reading at : " + System.DateTime.Now.Millisecond);
         } while (keepConnection && running && tcpClient.Connected);        
     }
 
@@ -202,7 +201,7 @@ public class ROSConnection : MonoBehaviour
 
         alreadyStartedServer = true;
         Debug.LogFormat("starting server on {0}:{1}", ip, port);
-        while (true)
+        while (running)
         {
             TcpListener tcpListener;
             try
@@ -235,6 +234,7 @@ public class ROSConnection : MonoBehaviour
                 Debug.LogError("Exception raised!! " + e);
             }
         }
+        alreadyStartedServer = false;
     }
 
 
@@ -318,6 +318,8 @@ public class ROSConnection : MonoBehaviour
 
     public async void Send(string rosTopicName, Message message)
     {
+        if (!running)
+            return;
         try
         {
             // Serialize the message in topic name, message size, and message bytes format
