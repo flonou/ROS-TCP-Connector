@@ -31,6 +31,8 @@ public class ROSConnection : MonoBehaviour
     public bool keepConnection = true;
     protected bool connecting = false;
 
+    protected bool running;
+
     static object _lock = new object(); // sync lock 
     static object _connectionLock = new object(); // sync lock 
     static List<Task> activeConnectionTasks = new List<Task>(); // pending connections
@@ -47,12 +49,18 @@ public class ROSConnection : MonoBehaviour
 
     Dictionary<string, SubscriberCallback> subscribers = new Dictionary<string, SubscriberCallback>();
 
-    void Start()
+    void OnDisable()
     {
+        running = false;
+    }
+
+    void OnEnable()
+    {
+		running = true;
         Subscribe<RosUnityError>(ERROR_TOPIC_NAME, RosUnityErrorCallback);
         if (overrideUnityIP != "")
         {
-            StartMessageServer(overrideUnityIP, unityPort); // no reason to wait, if we already know the IP
+            Task.Run(() => StartMessageServer(overrideUnityIP, unityPort)); // no reason to wait, if we already know the IP
         }
 
         Send(CONNECTION_PARAM_TOPIC_NAME, new RosUnityConnectionParam(keepConnection));
@@ -63,7 +71,7 @@ public class ROSConnection : MonoBehaviour
 
     void RosUnityHandshakeCallback(RosUnityHandshakeResponse response)
     {
-        StartMessageServer(response.ip, unityPort);
+        Task.Run(() => StartMessageServer(response.ip, unityPort));
     }
 
     void RosUnityErrorCallback(RosUnityError error)
@@ -93,16 +101,17 @@ public class ROSConnection : MonoBehaviour
     /// <param name="tcpClient"></param> TcpClient to read byte stream from.
     protected async Task HandleConnectionAsync(TcpClient tcpClient)
     {
-        await Task.Yield();
+        //await Task.Yield();
         NetworkStream networkStream = tcpClient.GetStream();
-        // continue asynchronously on another threads
+        // continue asynchronously on another thread
         do
         {
-            if (!networkStream.DataAvailable)
-                await Task.Yield();
+            /*if (!networkStream.DataAvailable)
+                await Task.Yield();*/
                 
             ReadMessage(networkStream);    
-        } while (keepConnection && tcpClient.Connected);        
+            //await Task.Yield();
+        } while (keepConnection && running && tcpClient.Connected);        
     }
 
     void ReadMessage(NetworkStream networkStream)
@@ -211,7 +220,7 @@ public class ROSConnection : MonoBehaviour
 
             try
             {
-                while (true)   //we wait for a connection
+                while (running)   //we wait for a connection
                 {
                     var tcpClient = await tcpListener.AcceptTcpClientAsync();
 
