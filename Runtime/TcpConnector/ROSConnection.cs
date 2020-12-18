@@ -62,6 +62,7 @@ public class ROSConnection : MonoBehaviour
         if (overrideUnityIP != "")
         {
             new Thread(() => StartMessageServer(overrideUnityIP, unityPort)).Start(); // no reason to wait, if we already know the IP
+            //StartMessageServer(overrideUnityIP, unityPort); // no reason to wait, if we already know the IP
         }
 
         Send(CONNECTION_PARAM_TOPIC_NAME, new RosUnityConnectionParam(keepConnection));
@@ -73,6 +74,7 @@ public class ROSConnection : MonoBehaviour
     void RosUnityHandshakeCallback(RosUnityHandshakeResponse response)
     {
         new Thread(() => StartMessageServer(response.ip, unityPort)).Start();
+        //StartMessageServer(response.ip, unityPort);
     }
 
     void RosUnityErrorCallback(RosUnityError error)
@@ -133,6 +135,8 @@ public class ROSConnection : MonoBehaviour
                 offset += topicNameBytes.Length;
                 string topicName = Encoding.ASCII.GetString(topicNameBytes, 0, topicLength);
                 // TODO: use topic name to confirm proper received location
+
+                //Debug.Log("got a message on topic : " + topicName);
 
                 byte[] full_message_size_bytes = new byte[4];
                 networkStream.Read(full_message_size_bytes, 0, full_message_size_bytes.Length);
@@ -200,6 +204,7 @@ public class ROSConnection : MonoBehaviour
             return;
 
         alreadyStartedServer = true;
+
         Debug.LogFormat("starting server on {0}:{1}", ip, port);
         while (running)
         {
