@@ -23,6 +23,7 @@ public class ROSConnection : MonoBehaviour
     [Tooltip("Try to keep the connections open")]
     public bool keepConnections = true;
     bool alreadyStartedServer = false;
+    bool serverRunning = false;
 
     TcpListener tcpListener;
     [Tooltip("Network tiemout (in ms)")]
@@ -325,7 +326,8 @@ public class ROSConnection : MonoBehaviour
             return;
 
         alreadyStartedServer = true;
-        while (true)
+        serverRunning = true;
+        while (serverRunning)
         {
             try
             {
@@ -334,7 +336,7 @@ public class ROSConnection : MonoBehaviour
 
                 Debug.Log("ROS-Unity server listening on " + ip + ":" + port);
 
-                while (tcpListener != null)   //we wait for a connection
+                while (serverRunning)   //we wait for a connection
                 {
                     var tcpClient = await tcpListener.AcceptTcpClientAsync();
 
@@ -377,6 +379,7 @@ public class ROSConnection : MonoBehaviour
     {
         // Cancel publishing related tasks
         publisherTokenStore.Cancel();
+        serverRunning= false;
         if (tcpListener != null)
             tcpListener.Stop();
         tcpListener = null;
