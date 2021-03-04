@@ -458,21 +458,27 @@ public class ROSConnection : MonoBehaviour
         try
         {
             publisherTokenStore.Token.ThrowIfCancellationRequested();
-            if (persistantPublisherNetworkStream == null || persistantPublisherClient == null || !persistantPublisherClient.Connected )
+            // Try to detect a disconnection from server side
+            if (persistantPublisherClient != null)
             {
-                persistantPublisherClient = new TcpClient();            
+                if (persistantPublisherClient.Client.Poll(0, SelectMode.SelectRead) && persistantPublisherClient.Client.Available == 0)
+                    persistantPublisherClient = null;
+            }
+            if (persistantPublisherNetworkStream == null || persistantPublisherClient == null || !persistantPublisherClient.Connected)
+            {
+                persistantPublisherClient = new TcpClient();
                 Debug.Log("Connecting persistent publisher client ...");
                 await persistantPublisherClient.ConnectAsync(hostName, hostPort);
                 persistantPublisherNetworkStream = persistantPublisherClient.GetStream();
                 persistantPublisherNetworkStream.ReadTimeout = networkTimeout;
+                persistantPublisherNetworkStream.WriteTimeout = networkTimeout;
                 Debug.Log("Connected persistent publisher client");
             }
         }
-            
         finally
         {
             _openPublisherConnectionAsyncLock.Release();
-        }   
+        }
     }
 
     public async void Send(string rosTopicName, Message message)
