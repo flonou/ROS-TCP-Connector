@@ -1,6 +1,5 @@
 using System;
-using System.Collections;
-using System.Collections.Generic;
+
 using UnityEngine;
 
 namespace ROSGeometry
@@ -17,7 +16,7 @@ namespace ROSGeometry
         public float z { get => internalQuat.z; set => internalQuat.z = value; }
         public float w { get => internalQuat.w; set => internalQuat.w = value; }
 
-        static C coordinateSpace = new C();
+        static readonly C coordinateSpace = new C();
 
         public Quaternion(float x, float y, float z, float w)
         {
@@ -32,9 +31,20 @@ namespace ROSGeometry
 
         public Quaternion toUnity => coordinateSpace.ConvertToRUF(internalQuat);
 
-        public static implicit operator RosMessageTypes.Geometry.Quaternion(Quaternion<C> quat) => new RosMessageTypes.Geometry.Quaternion(quat.x, quat.y, quat.z, quat.w);
-        public static explicit operator Quaternion<C>(Quaternion quat) => new Quaternion<C>(quat);
-        public static explicit operator Quaternion(Quaternion<C> rquat) => rquat.toUnity;
+        public static implicit operator RosMessageTypes.Geometry.Quaternion(Quaternion<C> quat)
+        {
+            return new RosMessageTypes.Geometry.Quaternion(quat.x, quat.y, quat.z, quat.w);
+        }
+
+        public static explicit operator Quaternion<C>(Quaternion quat)
+        {
+            return new Quaternion<C>(quat);
+        }
+
+        public static explicit operator Quaternion(Quaternion<C> rquat)
+        {
+            return rquat.toUnity;
+        }
 
         public Quaternion<C2> To<C2>() where C2 : CoordinateSpace, new()
         {
@@ -44,8 +54,10 @@ namespace ROSGeometry
         // for internal use only - this function does not convert from Unity to ROS coordinate space
         private static Quaternion<C> MakeInternal(Quaternion q)
         {
-            Quaternion<C> result = new Quaternion<C>();
-            result.internalQuat = q;
+            Quaternion<C> result = new Quaternion<C>
+            {
+                internalQuat = q
+            };
             return result;
         }
 
@@ -60,21 +72,30 @@ namespace ROSGeometry
             return MakeInternal(lhs.internalQuat * rhs.internalQuat);
         }
 
-        public static float Angle(Quaternion<C> a, Quaternion<C> b) => Quaternion.Angle(a.internalQuat, b.internalQuat);
+        public static float Angle(Quaternion<C> a, Quaternion<C> b)
+        {
+            return Quaternion.Angle(a.internalQuat, b.internalQuat);
+        }
 
         public static Quaternion<C> AngleAxis(float angle, Vector3<C> axis)
         {
             return MakeInternal(Quaternion.AngleAxis(angle, new Vector3(axis.x, axis.y, axis.z)));
         }
 
-        public static float Dot(Quaternion<C> a, Quaternion<C> b) => Quaternion.Dot(a.internalQuat, b.internalQuat);
+        public static float Dot(Quaternion<C> a, Quaternion<C> b)
+        {
+            return Quaternion.Dot(a.internalQuat, b.internalQuat);
+        }
 
         public static Quaternion<C> FromToRotation(Vector3<C> fromDirection, Vector3<C> toDirection)
         {
             return Quaternion.FromToRotation(fromDirection.toUnity, toDirection.toUnity).To<C>();
         }
 
-        public static Quaternion<C> Inverse(Quaternion<C> rotation) => MakeInternal(Quaternion.Inverse(rotation.internalQuat));
+        public static Quaternion<C> Inverse(Quaternion<C> rotation)
+        {
+            return MakeInternal(Quaternion.Inverse(rotation.internalQuat));
+        }
 
         public static Quaternion<C> Lerp(Quaternion<C> a, Quaternion<C> b, float t)
         {
@@ -91,7 +112,10 @@ namespace ROSGeometry
             return Quaternion.LookRotation(forward.toUnity).To<C>();
         }
 
-        public static Quaternion<C> Normalize(Quaternion<C> q) => MakeInternal(Quaternion.Normalize(q.internalQuat));
+        public static Quaternion<C> Normalize(Quaternion<C> q)
+        {
+            return MakeInternal(Quaternion.Normalize(q.internalQuat));
+        }
 
         public static Quaternion<C> RotateTowards(Quaternion<C> from, Quaternion<C> to, float maxDegreesDelta)
         {
@@ -108,7 +132,10 @@ namespace ROSGeometry
             return MakeInternal(Quaternion.RotateTowards(a.internalQuat, b.internalQuat, t));
         }
 
-        public bool Equals(Quaternion<C> other) => internalQuat == other.internalQuat;
+        public bool Equals(Quaternion<C> other)
+        {
+            return internalQuat == other.internalQuat;
+        }
 
         public override bool Equals(object other)
         {
@@ -117,8 +144,15 @@ namespace ROSGeometry
             return false;
         }
 
-        public override int GetHashCode() => internalQuat.GetHashCode();
-        public void Normalize() => internalQuat.Normalize();
+        public override int GetHashCode()
+        {
+            return internalQuat.GetHashCode();
+        }
+
+        public void Normalize()
+        {
+            internalQuat.Normalize();
+        }
 
         public void Set(float newX, float newY, float newZ, float newW)
         {
@@ -137,16 +171,27 @@ namespace ROSGeometry
 
         public void ToAngleAxis(out float angle, out Vector3<C> axis)
         {
-            Vector3 uaxis;
-            internalQuat.ToAngleAxis(out angle, out uaxis);
+            internalQuat.ToAngleAxis(out angle, out Vector3 uaxis);
             axis = uaxis.To<C>();
         }
 
 #if UNITY_2020_1_OR_NEWER
         public string ToString(string format, IFormatProvider formatProvider) => internalQuat.ToString(format, formatProvider);
+#else
+        public string ToString(string format, System.IFormatProvider formatProvider)
+        {
+            return internalQuat.ToString(format);
+        }
 #endif
 
-        public string ToString(string format) => internalQuat.ToString(format);
-        public override string ToString() => internalQuat.ToString();
+        public string ToString(string format)
+        {
+            return internalQuat.ToString(format);
+        }
+
+        public override string ToString()
+        {
+            return internalQuat.ToString();
+        }
     }
 }

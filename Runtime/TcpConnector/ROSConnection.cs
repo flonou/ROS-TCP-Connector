@@ -1,22 +1,28 @@
-using RosMessageGeneration;
-using RosMessageTypes.RosTcpEndpoint;
 using System;
-using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
 using System.Reflection;
 using System.Text;
-using System.Threading.Tasks;
 using System.Threading;
+using System.Threading.Tasks;
+
+using RosMessageGeneration;
+
+using RosMessageTypes.RosTcpEndpoint;
+
 using UnityEngine;
+using UnityEngine.Serialization;
 
 public class ROSConnection : MonoBehaviour
 {
     // Variables required for ROS communication
-    public string hostName = "192.168.1.1";
-    public int hostPort = 10000;
+    [FormerlySerializedAs("hostName")]
+    public string rosIPAddress = "127.0.0.1";
+    [FormerlySerializedAs("hostPort")]
+    public int rosPort = 10000;
+
     [Tooltip("If blank, determine IP automatically.")]
     public string overrideUnityIP = "";
     public int unityPort = 5005;
@@ -26,10 +32,12 @@ public class ROSConnection : MonoBehaviour
     bool serverRunning = false;
 
     TcpListener tcpListener;
-    [Tooltip("Network tiemout (in ms)")]
-    public int networkTimeout = 2000;
+    [Tooltip("Network timeout (in seconds)")]
+    public float networkTimeoutSeconds = 2;
 
+    [Tooltip("While waiting for a service to respond, check this many times before giving up.")]
     public int awaitDataMaxRetries = 10;
+    [Tooltip("While waiting for a service to respond, wait this many seconds between checks.")]
     public float awaitDataSleepSeconds = 1.0f;
 
 
@@ -37,11 +45,11 @@ public class ROSConnection : MonoBehaviour
     TcpClient persistantPublisherClient;
     NetworkStream persistantPublisherNetworkStream;
 
-    static object _lock = new object(); // sync lock 
+    static readonly object _lock = new object(); // sync lock 
     static readonly SemaphoreSlim _openPublisherConnectionAsyncLock = new SemaphoreSlim(1, 1);
     // Cancellation token for publisher connection
-    static CancellationTokenSource publisherTokenStore = new CancellationTokenSource();
-    static List<Task> activeConnectionTasks = new List<Task>(); // pending connections
+    static readonly CancellationTokenSource publisherTokenStore = new CancellationTokenSource();
+    static readonly List<Task> activeConnectionTasks = new List<Task>(); // pending connections
 
     const string ERROR_TOPIC_NAME = "__error";
     const string SYSCOMMAND_TOPIC_NAME = "__syscommand";
@@ -50,38 +58,18 @@ public class ROSConnection : MonoBehaviour
     const string SYSCOMMAND_SUBSCRIBE = "subscribe";
     const string SYSCOMMAND_PUBLISH = "publish";
     const string SYSCOMMAND_CONNECTIONS_PARAMETERS = "connections_parameters";
+    readonly Dictionary<string, SubscriberCallback> subscribers = new Dictionary<string, SubscriberCallback>();
+    readonly HashSet<string> publishers = new HashSet<string>();
 
-    Dictionary<string, SubscriberCallback> subscribers = new Dictionary<string, SubscriberCallback>();
-    HashSet<string> publishers = new HashSet<string>();
-    
     struct SubscriberCallback
     {
         public ConstructorInfo messageConstructor;
         public List<Action<Message>> callbacks;
     }
 
-    struct SysCommand_Subscribe
-    {
-        public string topic;
-        public string message_name;
-    }
-
-    struct SysCommand_Publish
-    {
-        public string topic;
-        public string message_name;
-    }
-
-    struct SysCommand_ConnectionsParameters
-    {
-        public bool keep_connections;
-        public float timeout_in_s;
-    }
-
     public void Subscribe<T>(string topic, Action<T> callback) where T : Message, new()
     {
-        SubscriberCallback subCallbacks;
-        if (!subscribers.TryGetValue(topic, out subCallbacks))
+        if (!subscribers.TryGetValue(topic, out SubscriberCallback subCallbacks))
         {
             subCallbacks = new SubscriberCallback
             {
@@ -103,27 +91,16 @@ public class ROSConnection : MonoBehaviour
         TcpClient client = null;
 
         RESPONSE serviceResponse = new RESPONSE();
-        
+
         // Send the message
         try
         {
-            if (keepConnections)
-            {
-                await Connect();
-                client = persistantPublisherClient;
-                networkStream = persistantPublisherNetworkStream;
-            } else
-            {
-                client = new TcpClient();
-                await client.ConnectAsync(hostName, hostPort);
+            client = await Connect();
+            networkStream = client.GetStream();
 
-                networkStream = client.GetStream();
-                networkStream.ReadTimeout = networkTimeout;
-            }
-      
-            networkStream.Write(messageBytes, 0, messageBytes.Length);
+            WriteDataStaggered(networkStream, rosServiceName, serviceRequest);
         }
-        catch(OperationCanceledException)
+        catch (OperationCanceledException)
         {
             // The operation was cancelled
         }
@@ -141,9 +118,9 @@ public class ROSConnection : MonoBehaviour
 
         // Poll every 1 second(s) for available data on the stream
         int attempts = 0;
-        while (!networkStream.DataAvailable && attempts <= this.awaitDataMaxRetries)
+        while (!networkStream.DataAvailable && attempts <= awaitDataMaxRetries)
         {
-            if (attempts == this.awaitDataMaxRetries)
+            if (attempts == awaitDataMaxRetries)
             {
                 Debug.LogError("No data available on network stream after " + awaitDataMaxRetries + " attempts.");
                 goto finish;
@@ -174,7 +151,7 @@ public class ROSConnection : MonoBehaviour
             byte[] readBuffer = new byte[full_message_size];
             while (networkStream.DataAvailable && numberOfBytesRead < full_message_size)
             {
-                var readBytes = networkStream.Read(readBuffer, 0, readBuffer.Length);
+                int readBytes = networkStream.Read(readBuffer, 0, readBuffer.Length);
                 numberOfBytesRead += readBytes;
             }
 
@@ -201,8 +178,42 @@ public class ROSConnection : MonoBehaviour
         SendSysCommand(SYSCOMMAND_PUBLISH, new SysCommand_Publish { topic = topic, message_name = rosMessageName });
     }
 
+    private static ROSConnection _instance;
+    public static ROSConnection instance
+    {
+        get
+        {
+            if (_instance == null)
+            {
+                GameObject prefab = Resources.Load<GameObject>("ROSConnectionPrefab");
+                if (prefab == null)
+                {
+                    Debug.LogWarning("No settings for ROSConnection.instance! Open \"ROS Settings\" from the Robotics menu to configure it.");
+                    GameObject instance = new GameObject("ROSConnection");
+                    _instance = instance.AddComponent<ROSConnection>();
+                }
+                else
+                {
+                    Instantiate(prefab);
+                }
+            }
+            return _instance;
+        }
+    }
 
-    void Awake()
+    [UnityEditor.Callbacks.DidReloadScripts]
+    private static void OnScriptsReloaded()
+    {
+        _instance = GameObject.FindObjectOfType<ROSConnection>();
+    }
+
+    void OnEnable()
+    {
+        if (_instance == null)
+            _instance = this;
+    }
+
+    private void Start()
     {
         Subscribe<RosUnityError>(ERROR_TOPIC_NAME, RosUnityErrorCallback);
 
@@ -210,11 +221,11 @@ public class ROSConnection : MonoBehaviour
         {
             StartMessageServer(overrideUnityIP, unityPort); // no reason to wait, if we already know the IP
         }
-		// Must be send first as it may change how connections are handled
-        SendSysCommand(SYSCOMMAND_CONNECTIONS_PARAMETERS, new SysCommand_ConnectionsParameters { keep_connections = this.keepConnections, timeout_in_s = networkTimeout / 1000.0f});
-        
-        SendServiceMessage<UnityHandshakeResponse>(HANDSHAKE_TOPIC_NAME, new UnityHandshakeRequest(overrideUnityIP, (ushort)unityPort), RosUnityHandshakeCallback);
 
+        // Must be send first as it may change how connections are handled
+        SendSysCommand(SYSCOMMAND_CONNECTIONS_PARAMETERS, new SysCommand_ConnectionsParameters { keep_connections = keepConnections, timeout_in_s = networkTimeoutSeconds });
+
+        SendServiceMessage<UnityHandshakeResponse>(HANDSHAKE_TOPIC_NAME, new UnityHandshakeRequest(overrideUnityIP, (ushort)unityPort), RosUnityHandshakeCallback);
     }
 
     void RosUnityHandshakeCallback(UnityHandshakeResponse response)
@@ -275,8 +286,7 @@ public class ROSConnection : MonoBehaviour
                     numberOfBytesRead += bytesRead;
                 }
 
-                SubscriberCallback subs;
-                if (subscribers.TryGetValue(topicName, out subs))
+                if (subscribers.TryGetValue(topicName, out SubscriberCallback subs))
                 {
                     Message msg = (Message)subs.messageConstructor.Invoke(new object[0]);
                     msg.Deserialize(readBuffer, 0);
@@ -299,7 +309,7 @@ public class ROSConnection : MonoBehaviour
     /// <param name="tcpClient"></param> TcpClient to read byte stream from.
     private async Task StartHandleConnectionAsync(TcpClient tcpClient)
     {
-        var connectionTask = HandleConnectionAsync(tcpClient);
+        Task connectionTask = HandleConnectionAsync(tcpClient);
 
         lock (_lock)
             activeConnectionTasks.Add(connectionTask);
@@ -331,16 +341,18 @@ public class ROSConnection : MonoBehaviour
         {
             try
             {
+                if (!Application.isPlaying)
+                    break;
                 tcpListener = new TcpListener(IPAddress.Parse(ip), port);
                 tcpListener.Start();
 
                 Debug.Log("ROS-Unity server listening on " + ip + ":" + port);
 
-                while (serverRunning)   //we wait for a connection
+                while (tcpListener != null)   //we wait for a connection
                 {
-                    var tcpClient = await tcpListener.AcceptTcpClientAsync();
+                    TcpClient tcpClient = await tcpListener.AcceptTcpClientAsync();
 
-                    var task = StartHandleConnectionAsync(tcpClient);
+                    Task task = StartHandleConnectionAsync(tcpClient);
                     // if already faulted, re-throw any error on the calling context
                     if (task.IsFaulted)
                         await task;
@@ -359,9 +371,9 @@ public class ROSConnection : MonoBehaviour
             }
             catch (ObjectDisposedException e)
             {
-                if (tcpListener == null)
+                if (!Application.isPlaying)
                 {
-                    // we're shutting down, that's fine
+                    // This only happened because we're shutting down. Not a problem.
                 }
                 else
                 {
@@ -372,6 +384,9 @@ public class ROSConnection : MonoBehaviour
             {
                 Debug.LogError("Exception raised!! " + e);
             }
+
+            // to avoid infinite loops, wait a frame before trying to restart the server
+            await Task.Yield();
         }
     }
 
@@ -379,7 +394,6 @@ public class ROSConnection : MonoBehaviour
     {
         // Cancel publishing related tasks
         publisherTokenStore.Cancel();
-        serverRunning= false;
         if (tcpListener != null)
             tcpListener.Stop();
         tcpListener = null;
@@ -448,34 +462,70 @@ public class ROSConnection : MonoBehaviour
         return messageBuffer;
     }
 
-  
+
     void SendSysCommand(string command, object param)
     {
         Send(SYSCOMMAND_TOPIC_NAME, new RosUnitySysCommand(command, JsonUtility.ToJson(param)));
     }
 
-    protected async Task Connect()
+    struct SysCommand_Subscribe
     {
-        // prevent concurrent persistant connection opening
-        await _openPublisherConnectionAsyncLock.WaitAsync(publisherTokenStore.Token);
-        try
+        public string topic;
+        public string message_name;
+    }
+
+    struct SysCommand_Publish
+    {
+        public string topic;
+        public string message_name;
+    }
+
+    struct SysCommand_ConnectionsParameters
+    {
+        public bool keep_connections;
+        public float timeout_in_s;
+    }
+
+    protected async Task<TcpClient> Connect()
+    {
+        if (keepConnections)
         {
-            publisherTokenStore.Token.ThrowIfCancellationRequested();
-            if (persistantPublisherNetworkStream == null || persistantPublisherClient == null || !persistantPublisherClient.Connected )
+            // prevent concurrent persistant connection opening
+            await _openPublisherConnectionAsyncLock.WaitAsync(publisherTokenStore.Token);
+            try
             {
-                persistantPublisherClient = new TcpClient();            
-                Debug.Log("Connecting persistent publisher client ...");
-                await persistantPublisherClient.ConnectAsync(hostName, hostPort);
-                persistantPublisherNetworkStream = persistantPublisherClient.GetStream();
-                persistantPublisherNetworkStream.ReadTimeout = networkTimeout;
-                Debug.Log("Connected persistent publisher client");
+                publisherTokenStore.Token.ThrowIfCancellationRequested();
+                if (persistantPublisherClient == null || !persistantPublisherClient.Connected ||
+                    !persistantPublisherClient.Client.Poll(0, SelectMode.SelectWrite) ||
+                    //if poll read returns true and available return 0, then we have a connection issue
+                    (persistantPublisherClient.Client.Poll(0, SelectMode.SelectRead) &&
+                    persistantPublisherClient.Client.Available == 0))
+                {
+                    // detect whether the other end disconnected
+                    persistantPublisherClient = new TcpClient();
+                    Debug.Log("Connecting persistent publisher client ...");
+                    await persistantPublisherClient.ConnectAsync(rosIPAddress, rosPort);
+                    persistantPublisherNetworkStream = persistantPublisherClient.GetStream();
+                    persistantPublisherNetworkStream.ReadTimeout = (int)networkTimeoutSeconds * 1000;
+                    persistantPublisherNetworkStream.WriteTimeout = (int)networkTimeoutSeconds * 1000;
+                    Debug.Log("Connected persistent publisher client");
+                }
             }
+            finally
+            {
+                _openPublisherConnectionAsyncLock.Release();
+            }
+            return persistantPublisherClient;
         }
-            
-        finally
+        else
         {
-            _openPublisherConnectionAsyncLock.Release();
-        }   
+            TcpClient client = new TcpClient();
+            await client.ConnectAsync(rosIPAddress, rosPort);
+
+            NetworkStream networkStream = client.GetStream();
+            networkStream.ReadTimeout = (int)networkTimeoutSeconds * 1000;
+            return client;
+        }
     }
 
     public async void Send(string rosTopicName, Message message)
@@ -483,24 +533,12 @@ public class ROSConnection : MonoBehaviour
         TcpClient client = null;
         try
         {
-            NetworkStream networkStream = null;
-            if (keepConnections)
-            {
-                await Connect();
-                client = persistantPublisherClient;
-                networkStream = persistantPublisherNetworkStream;
-            } else
-            {
-                client = new TcpClient();
-                await client.ConnectAsync(hostName, hostPort);
+            client = await Connect();
+            NetworkStream networkStream = client.GetStream();
 
-                networkStream = client.GetStream();
-                networkStream.ReadTimeout = networkTimeout;
-            }
             WriteDataStaggered(networkStream, rosTopicName, message);
         }
-        
-        catch(OperationCanceledException)
+        catch (OperationCanceledException)
         {
             // The operation was cancelled
         }
@@ -545,7 +583,7 @@ public class ROSConnection : MonoBehaviour
     {
         byte[] topicName = message.SerializeString(rosTopicName);
         List<byte[]> segments = message.SerializationStatements();
-        int messageLength = segments.Select(s=>s.Length).Sum();
+        int messageLength = segments.Select(s => s.Length).Sum();
         byte[] fullMessageSizeBytes = BitConverter.GetBytes(messageLength);
 
         networkStream.Write(topicName, 0, topicName.Length);
