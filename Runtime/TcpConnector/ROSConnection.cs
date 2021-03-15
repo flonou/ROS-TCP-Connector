@@ -201,7 +201,9 @@ public class ROSConnection : MonoBehaviour
         }
     }
 
+#if UNITY_EDITOR
     [UnityEditor.Callbacks.DidReloadScripts]
+#endif
     private static void OnScriptsReloaded()
     {
         _instance = GameObject.FindObjectOfType<ROSConnection>();
@@ -213,7 +215,7 @@ public class ROSConnection : MonoBehaviour
             _instance = this;
     }
 
-    private void Start()
+    private void Awake()
     {
         Subscribe<RosUnityError>(ERROR_TOPIC_NAME, RosUnityErrorCallback);
 
