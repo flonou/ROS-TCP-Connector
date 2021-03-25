@@ -357,7 +357,10 @@ public class ROSConnection : MonoBehaviour
         while (serverRunning)
         {
             try
-            {                
+            {       
+                if (!Application.isPlaying)
+                    break;
+
                 tcpListener = new TcpListener(IPAddress.Parse(ip), port);
                 tcpListener.Start();
 
@@ -372,16 +375,19 @@ public class ROSConnection : MonoBehaviour
                     if (task.IsFaulted)
                         await task;
 
-                    // try to get through the message queue before doing another await
-                    // but if messages are arriving faster than we can process them, don't freeze up
-                   /* float abortAtRealtime = Time.realtimeSinceStartup + 0.1f;
-                    while (tcpListener != null && tcpListener.Pending() && Time.realtimeSinceStartup < abortAtRealtime)
+                    if (!keepConnections)
                     {
-                        tcpClient = tcpListener.AcceptTcpClient();
-                        task = StartHandleConnectionAsync(tcpClient);
-                        if (task.IsFaulted)
-                            await task;
-                    }*/
+                        // try to get through the message queue before doing another await
+                        // but if messages are arriving faster than we can process them, don't freeze up
+                        float abortAtRealtime = Time.realtimeSinceStartup + 0.1f;
+                        while (tcpListener != null && tcpListener.Pending() && Time.realtimeSinceStartup < abortAtRealtime)
+                        {
+                            tcpClient = tcpListener.AcceptTcpClient();
+                            task = StartHandleConnectionAsync(tcpClient);
+                            if (task.IsFaulted)
+                                await task;
+                        }
+                    }
                 }
             }
             catch (ObjectDisposedException e)
@@ -390,7 +396,10 @@ public class ROSConnection : MonoBehaviour
                 {
                     // This only happened because we're shutting down. Not a problem.
                 }
-                Debug.LogError("Exception raised!! " + e);
+                else
+                {
+                    Debug.LogError("Exception raised!! " + e);
+                }
             }
             catch (Exception e)
             {
