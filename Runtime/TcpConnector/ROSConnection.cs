@@ -262,34 +262,34 @@ public class ROSConnection : MonoBehaviour
         {
             await Task.Yield();
             //Debug.Log("start reading at : " + System.DateTime.Now.Millisecond);
-            await ReadMessage(networkStream);   
+            ReadMessage(networkStream);   
             //Debug.Log("       stop reading at : " + System.DateTime.Now.Millisecond);
         } while (keepConnections && serverRunning && tcpClient.Connected);  
     }
 
-    async Task ReadMessage(NetworkStream networkStream)
+    void ReadMessage(NetworkStream networkStream)
     {
         try
         {
-            if (networkStream.CanRead)
+            if (networkStream.CanRead && (!keepConnections || networkStream.DataAvailable))
             {
                 int offset = 0;
 
                 // Get first bytes to determine length of topic name
                 byte[] rawTopicBytes = new byte[4];
-                await networkStream.ReadAsync(rawTopicBytes, 0, rawTopicBytes.Length);
+                networkStream.Read(rawTopicBytes, 0, rawTopicBytes.Length);
                 offset += 4;
                 int topicLength = BitConverter.ToInt32(rawTopicBytes, 0);
 
                 // Read and convert topic name
                 byte[] topicNameBytes = new byte[topicLength];
-                await networkStream.ReadAsync(topicNameBytes, 0, topicNameBytes.Length);
+                networkStream.Read(topicNameBytes, 0, topicNameBytes.Length);
                 offset += topicNameBytes.Length;
                 string topicName = Encoding.ASCII.GetString(topicNameBytes, 0, topicLength);
                 // TODO: use topic name to confirm proper received location
 
                 byte[] full_message_size_bytes = new byte[4];
-                await networkStream.ReadAsync(full_message_size_bytes, 0, full_message_size_bytes.Length);
+                networkStream.Read(full_message_size_bytes, 0, full_message_size_bytes.Length);
                 offset += 4;
                 int full_message_size = BitConverter.ToInt32(full_message_size_bytes, 0);
 
@@ -298,7 +298,7 @@ public class ROSConnection : MonoBehaviour
 
                 while (networkStream.DataAvailable && numberOfBytesRead < full_message_size)
                 {
-                    int bytesRead = await networkStream.ReadAsync(readBuffer, 0, readBuffer.Length);
+                    int bytesRead = networkStream.Read(readBuffer, 0, readBuffer.Length);
                     offset += bytesRead;
                     numberOfBytesRead += bytesRead;
                 }
@@ -385,7 +385,11 @@ public class ROSConnection : MonoBehaviour
                 }
             }
             catch (ObjectDisposedException e)
-            {
+            { 
+                if (!Application.isPlaying)
+                {
+                    // This only happened because we're shutting down. Not a problem.
+                }
                 Debug.LogError("Exception raised!! " + e);
             }
             catch (Exception e)
