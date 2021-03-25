@@ -215,13 +215,19 @@ public class ROSConnection : MonoBehaviour
             _instance = this;
     }
 
-    private void Awake()
+    void OnDisable()
+    {
+        serverRunning = false;
+    }
+
+    private void Start()
     {
         Subscribe<RosUnityError>(ERROR_TOPIC_NAME, RosUnityErrorCallback);
 
         if (overrideUnityIP != "")
         {
             StartMessageServer(overrideUnityIP, unityPort); // no reason to wait, if we already know the IP
+            //new Thread(() => StartMessageServer(overrideUnityIP, unityPort)).Start(); // no reason to wait, if we already know the IP
         }
 
         // Must be send first as it may change how connections are handled
@@ -233,6 +239,7 @@ public class ROSConnection : MonoBehaviour
     void RosUnityHandshakeCallback(UnityHandshakeResponse response)
     {
         StartMessageServer(response.ip, unityPort);
+        //new Thread(() => StartMessageServer(response.ip, unityPort)).Start();
     }
 
     void RosUnityErrorCallback(RosUnityError error)
@@ -246,13 +253,21 @@ public class ROSConnection : MonoBehaviour
     /// <param name="tcpClient"></param> TcpClient to read byte stream from.
     protected async Task HandleConnectionAsync(TcpClient tcpClient)
     {
-        await Task.Yield();
+        //await Task.Yield();
+        NetworkStream networkStream = tcpClient.GetStream();
         // continue asynchronously on another threads
 
-        ReadMessage(tcpClient.GetStream());
+        //ReadMessage(tcpClient.GetStream());
+        do
+        {
+            await Task.Yield();
+            //Debug.Log("start reading at : " + System.DateTime.Now.Millisecond);
+            await ReadMessage(networkStream);   
+            //Debug.Log("       stop reading at : " + System.DateTime.Now.Millisecond);
+        } while (keepConnections && serverRunning && tcpClient.Connected);  
     }
 
-    void ReadMessage(NetworkStream networkStream)
+    async Task ReadMessage(NetworkStream networkStream)
     {
         try
         {
@@ -262,19 +277,19 @@ public class ROSConnection : MonoBehaviour
 
                 // Get first bytes to determine length of topic name
                 byte[] rawTopicBytes = new byte[4];
-                networkStream.Read(rawTopicBytes, 0, rawTopicBytes.Length);
+                await networkStream.ReadAsync(rawTopicBytes, 0, rawTopicBytes.Length);
                 offset += 4;
                 int topicLength = BitConverter.ToInt32(rawTopicBytes, 0);
 
                 // Read and convert topic name
                 byte[] topicNameBytes = new byte[topicLength];
-                networkStream.Read(topicNameBytes, 0, topicNameBytes.Length);
+                await networkStream.ReadAsync(topicNameBytes, 0, topicNameBytes.Length);
                 offset += topicNameBytes.Length;
                 string topicName = Encoding.ASCII.GetString(topicNameBytes, 0, topicLength);
                 // TODO: use topic name to confirm proper received location
 
                 byte[] full_message_size_bytes = new byte[4];
-                networkStream.Read(full_message_size_bytes, 0, full_message_size_bytes.Length);
+                await networkStream.ReadAsync(full_message_size_bytes, 0, full_message_size_bytes.Length);
                 offset += 4;
                 int full_message_size = BitConverter.ToInt32(full_message_size_bytes, 0);
 
@@ -283,7 +298,7 @@ public class ROSConnection : MonoBehaviour
 
                 while (networkStream.DataAvailable && numberOfBytesRead < full_message_size)
                 {
-                    int bytesRead = networkStream.Read(readBuffer, 0, readBuffer.Length);
+                    int bytesRead = await networkStream.ReadAsync(readBuffer, 0, readBuffer.Length);
                     offset += bytesRead;
                     numberOfBytesRead += bytesRead;
                 }
@@ -342,15 +357,13 @@ public class ROSConnection : MonoBehaviour
         while (serverRunning)
         {
             try
-            {
-                if (!Application.isPlaying)
-                    break;
+            {                
                 tcpListener = new TcpListener(IPAddress.Parse(ip), port);
                 tcpListener.Start();
 
                 Debug.Log("ROS-Unity server listening on " + ip + ":" + port);
 
-                while (tcpListener != null)   //we wait for a connection
+                while (serverRunning && tcpListener != null)   //we wait for a connection
                 {
                     TcpClient tcpClient = await tcpListener.AcceptTcpClientAsync();
 
@@ -361,26 +374,19 @@ public class ROSConnection : MonoBehaviour
 
                     // try to get through the message queue before doing another await
                     // but if messages are arriving faster than we can process them, don't freeze up
-                    float abortAtRealtime = Time.realtimeSinceStartup + 0.1f;
+                   /* float abortAtRealtime = Time.realtimeSinceStartup + 0.1f;
                     while (tcpListener != null && tcpListener.Pending() && Time.realtimeSinceStartup < abortAtRealtime)
                     {
                         tcpClient = tcpListener.AcceptTcpClient();
                         task = StartHandleConnectionAsync(tcpClient);
                         if (task.IsFaulted)
                             await task;
-                    }
+                    }*/
                 }
             }
             catch (ObjectDisposedException e)
             {
-                if (!Application.isPlaying)
-                {
-                    // This only happened because we're shutting down. Not a problem.
-                }
-                else
-                {
-                    Debug.LogError("Exception raised!! " + e);
-                }
+                Debug.LogError("Exception raised!! " + e);
             }
             catch (Exception e)
             {
@@ -390,6 +396,7 @@ public class ROSConnection : MonoBehaviour
             // to avoid infinite loops, wait a frame before trying to restart the server
             await Task.Yield();
         }
+        alreadyStartedServer = false;
     }
 
     private void OnApplicationQuit()
