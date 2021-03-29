@@ -271,7 +271,7 @@ public class ROSConnection : MonoBehaviour
     {
         try
         {
-            if (networkStream.CanRead && (!keepConnections || networkStream.DataAvailable))
+            while (networkStream.CanRead && (!keepConnections || networkStream.DataAvailable))
             {
                 int offset = 0;
 
