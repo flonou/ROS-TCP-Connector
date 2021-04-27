@@ -268,12 +268,12 @@ public class ROSConnection : MonoBehaviour
         do
         {
             await Task.Yield();
+            Thread.Sleep(1);
             //Debug.Log("start reading at : " + System.DateTime.Now.Millisecond);
             ReadMessage(networkStream);
             //Debug.Log("       stop reading at : " + System.DateTime.Now.Millisecond);
         } while (keepConnections && serverRunning && tcpClient.Connected);
     }
-
     void ReadMessage(NetworkStream networkStream)
     {
         try
@@ -365,8 +365,8 @@ public class ROSConnection : MonoBehaviour
         {
             try
             {
-                if (!Application.isPlaying)
-                    break;
+                //if (!Application.isPlaying)
+                //    break;
 
                 tcpListener = new TcpListener(IPAddress.Parse(ip), port);
                 tcpListener.Start();
@@ -584,7 +584,7 @@ public class ROSConnection : MonoBehaviour
         }
         catch (Exception e)
         {
-            Debug.LogError("TCPConnector Exception: " + e);
+            Debug.LogError("TCPConnector Exception (" + rosTopicName + "): " + e);
         }
         finally
         {
