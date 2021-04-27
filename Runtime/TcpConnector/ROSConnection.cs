@@ -1,3 +1,5 @@
+using RosMessageGeneration;
+using RosMessageTypes.RosTcpEndpoint;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -7,11 +9,6 @@ using System.Reflection;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-
-using RosMessageGeneration;
-
-using RosMessageTypes.RosTcpEndpoint;
-
 using UnityEngine;
 using UnityEngine.Serialization;
 
@@ -46,6 +43,7 @@ public class ROSConnection : MonoBehaviour
     NetworkStream persistantPublisherNetworkStream;
 
     static readonly object _lock = new object(); // sync lock 
+    static readonly SemaphoreSlim _sendAsyncLock = new SemaphoreSlim(1, 1);
     static readonly SemaphoreSlim _openPublisherConnectionAsyncLock = new SemaphoreSlim(1, 1);
     // Cancellation token for publisher connection
     static readonly CancellationTokenSource publisherTokenStore = new CancellationTokenSource();
@@ -84,6 +82,8 @@ public class ROSConnection : MonoBehaviour
 
     public async void SendServiceMessage<RESPONSE>(string rosServiceName, Message serviceRequest, Action<RESPONSE> callback) where RESPONSE : Message, new()
     {
+        await _sendAsyncLock.WaitAsync().ConfigureAwait(false);
+
         // Serialize the message in service name, message size, and message bytes format
         byte[] messageBytes = GetMessageBytes(rosServiceName, serviceRequest);
 
@@ -95,6 +95,8 @@ public class ROSConnection : MonoBehaviour
         // Send the message
         try
         {
+            publisherTokenStore.Token.ThrowIfCancellationRequested();
+
             client = await Connect();
             networkStream = client.GetStream();
 
@@ -108,6 +110,10 @@ public class ROSConnection : MonoBehaviour
         {
             Debug.LogError("SocketException: " + e);
             goto finish;
+        }
+        finally
+        {
+            _sendAsyncLock.Release();
         }
 
         if (!networkStream.CanRead)
@@ -222,6 +228,9 @@ public class ROSConnection : MonoBehaviour
 
     private void Start()
     {
+        // Must be sent first as it may change how connections are handled
+        SendSysCommand(SYSCOMMAND_CONNECTIONS_PARAMETERS, new SysCommand_ConnectionsParameters { keep_connections = keepConnections, timeout_in_s = networkTimeoutSeconds });
+
         Subscribe<RosUnityError>(ERROR_TOPIC_NAME, RosUnityErrorCallback);
 
         if (overrideUnityIP != "")
@@ -230,8 +239,6 @@ public class ROSConnection : MonoBehaviour
             //new Thread(() => StartMessageServer(overrideUnityIP, unityPort)).Start(); // no reason to wait, if we already know the IP
         }
 
-        // Must be send first as it may change how connections are handled
-        SendSysCommand(SYSCOMMAND_CONNECTIONS_PARAMETERS, new SysCommand_ConnectionsParameters { keep_connections = keepConnections, timeout_in_s = networkTimeoutSeconds });
 
         SendServiceMessage<UnityHandshakeResponse>(HANDSHAKE_TOPIC_NAME, new UnityHandshakeRequest(overrideUnityIP, (ushort)unityPort), RosUnityHandshakeCallback);
     }
@@ -262,9 +269,9 @@ public class ROSConnection : MonoBehaviour
         {
             await Task.Yield();
             //Debug.Log("start reading at : " + System.DateTime.Now.Millisecond);
-            ReadMessage(networkStream);   
+            ReadMessage(networkStream);
             //Debug.Log("       stop reading at : " + System.DateTime.Now.Millisecond);
-        } while (keepConnections && serverRunning && tcpClient.Connected);  
+        } while (keepConnections && serverRunning && tcpClient.Connected);
     }
 
     void ReadMessage(NetworkStream networkStream)
@@ -357,7 +364,7 @@ public class ROSConnection : MonoBehaviour
         while (serverRunning)
         {
             try
-            {       
+            {
                 if (!Application.isPlaying)
                     break;
 
@@ -391,7 +398,7 @@ public class ROSConnection : MonoBehaviour
                 }
             }
             catch (ObjectDisposedException e)
-            { 
+            {
                 if (!Application.isPlaying)
                 {
                     // This only happened because we're shutting down. Not a problem.
@@ -512,30 +519,33 @@ public class ROSConnection : MonoBehaviour
     {
         if (keepConnections)
         {
-            // prevent concurrent persistant connection opening
-            await _openPublisherConnectionAsyncLock.WaitAsync(publisherTokenStore.Token);
-            try
+            if (persistantPublisherClient == null || !persistantPublisherClient.Connected)
             {
-                publisherTokenStore.Token.ThrowIfCancellationRequested();
-                if (persistantPublisherClient == null || !persistantPublisherClient.Connected ||
-                    !persistantPublisherClient.Client.Poll(0, SelectMode.SelectWrite) ||
-                    //if poll read returns true and available return 0, then we have a connection issue
-                    (persistantPublisherClient.Client.Poll(0, SelectMode.SelectRead) &&
-                    persistantPublisherClient.Client.Available == 0))
+                // prevent concurrent persistant connection opening
+                await _openPublisherConnectionAsyncLock.WaitAsync(publisherTokenStore.Token).ConfigureAwait(false);
+                try
                 {
-                    // detect whether the other end disconnected
-                    persistantPublisherClient = new TcpClient();
-                    Debug.Log("Connecting persistent publisher client ...");
-                    await persistantPublisherClient.ConnectAsync(rosIPAddress, rosPort);
-                    persistantPublisherNetworkStream = persistantPublisherClient.GetStream();
-                    persistantPublisherNetworkStream.ReadTimeout = (int)networkTimeoutSeconds * 1000;
-                    persistantPublisherNetworkStream.WriteTimeout = (int)networkTimeoutSeconds * 1000;
-                    Debug.Log("Connected persistent publisher client");
+                    publisherTokenStore.Token.ThrowIfCancellationRequested();
+                    if (persistantPublisherClient == null || !persistantPublisherClient.Connected ||
+                        !persistantPublisherClient.Client.Poll(0, SelectMode.SelectWrite) ||
+                        //if poll read returns true and available return 0, then we have a connection issue
+                        (persistantPublisherClient.Client.Poll(0, SelectMode.SelectRead) &&
+                        persistantPublisherClient.Client.Available == 0))
+                    {
+                        // detect whether the other end disconnected
+                        persistantPublisherClient = new TcpClient();
+                        Debug.Log("Connecting persistent publisher client ...");
+                        await persistantPublisherClient.ConnectAsync(rosIPAddress, rosPort);
+                        persistantPublisherNetworkStream = persistantPublisherClient.GetStream();
+                        persistantPublisherNetworkStream.ReadTimeout = (int)networkTimeoutSeconds * 1000;
+                        persistantPublisherNetworkStream.WriteTimeout = (int)networkTimeoutSeconds * 1000;
+                        Debug.Log("Connected persistent publisher client");
+                    }
                 }
-            }
-            finally
-            {
-                _openPublisherConnectionAsyncLock.Release();
+                finally
+                {
+                    _openPublisherConnectionAsyncLock.Release();
+                }
             }
             return persistantPublisherClient;
         }
@@ -552,9 +562,13 @@ public class ROSConnection : MonoBehaviour
 
     public async void Send(string rosTopicName, Message message)
     {
+        await _sendAsyncLock.WaitAsync().ConfigureAwait(false);
+
         TcpClient client = null;
         try
         {
+            publisherTokenStore.Token.ThrowIfCancellationRequested();
+
             client = await Connect();
             NetworkStream networkStream = client.GetStream();
 
@@ -585,6 +599,7 @@ public class ROSConnection : MonoBehaviour
                     //Ignored.
                 }
             }
+            _sendAsyncLock.Release();
         }
     }
 
