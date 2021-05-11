@@ -1,5 +1,7 @@
 using RosMessageGeneration;
+
 using RosMessageTypes.RosTcpEndpoint;
+
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -9,6 +11,7 @@ using System.Reflection;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+
 using UnityEngine;
 using UnityEngine.Serialization;
 
@@ -168,7 +171,7 @@ public class ROSConnection : MonoBehaviour
             Debug.LogError("Exception raised!! " + e);
         }
 
-        finish:
+    finish:
         callback(serviceResponse);
         if (!keepConnections && client.Connected)
             client.Close();
@@ -305,7 +308,7 @@ public class ROSConnection : MonoBehaviour
 
                 while (networkStream.DataAvailable && numberOfBytesRead < full_message_size)
                 {
-                    int bytesRead = networkStream.Read(readBuffer, 0, readBuffer.Length);
+                    int bytesRead = networkStream.Read(readBuffer, numberOfBytesRead, readBuffer.Length - numberOfBytesRead);
                     offset += bytesRead;
                     numberOfBytesRead += bytesRead;
                 }
@@ -534,7 +537,7 @@ public class ROSConnection : MonoBehaviour
                     {
                         // detect whether the other end disconnected
                         persistantPublisherClient = new TcpClient();
-                        Debug.Log("Connecting persistent publisher client ...");
+                        Debug.LogFormat("Connecting persistent publisher client ... to {0}", rosIPAddress);
                         await persistantPublisherClient.ConnectAsync(rosIPAddress, rosPort);
                         persistantPublisherNetworkStream = persistantPublisherClient.GetStream();
                         persistantPublisherNetworkStream.ReadTimeout = (int)networkTimeoutSeconds * 1000;
