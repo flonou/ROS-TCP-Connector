@@ -62,6 +62,10 @@ public class ROSConnection : MonoBehaviour
     readonly Dictionary<string, SubscriberCallback> subscribers = new Dictionary<string, SubscriberCallback>();
     readonly HashSet<string> publishers = new HashSet<string>();
 
+    List<SysCommand_Subscribe> subscribersCommands = new List<SysCommand_Subscribe>();
+    List<SysCommand_Publish> publishersCommands = new List<SysCommand_Publish>();
+    List<TcpClient> listeners = new List<TcpClient>();
+
     struct SubscriberCallback
     {
         public ConstructorInfo messageConstructor;
@@ -179,12 +183,16 @@ public class ROSConnection : MonoBehaviour
 
     public void RegisterSubscriber(string topic, string rosMessageName)
     {
-        SendSysCommand(SYSCOMMAND_SUBSCRIBE, new SysCommand_Subscribe { topic = topic, message_name = rosMessageName });
+        SysCommand_Subscribe subscribeCommand = new SysCommand_Subscribe { topic = topic, message_name = rosMessageName };
+        subscribersCommands.Add(subscribeCommand);
+        SendSysCommand(SYSCOMMAND_SUBSCRIBE, subscribeCommand);
     }
 
     public void RegisterPublisher(string topic, string rosMessageName)
     {
-        SendSysCommand(SYSCOMMAND_PUBLISH, new SysCommand_Publish { topic = topic, message_name = rosMessageName });
+        SysCommand_Publish publishCommand = new SysCommand_Publish { topic = topic, message_name = rosMessageName };
+        publishersCommands.Add(publishCommand);
+        SendSysCommand(SYSCOMMAND_PUBLISH, publishCommand);
     }
 
     private static ROSConnection _instance;
@@ -231,6 +239,29 @@ public class ROSConnection : MonoBehaviour
 
     private void Start()
     {
+       Reset();
+    }
+
+    public void Reset()
+    {
+        serverRunning = false;
+        alreadyStartedServer = false;
+        //publisherTokenStore.Cancel();
+        if (tcpListener != null)
+            tcpListener.Stop();
+        tcpListener = null;
+        if (persistantPublisherClient != null)
+        {
+            if (persistantPublisherClient.Connected)
+                persistantPublisherClient.Close();
+            persistantPublisherClient = null;
+            persistantPublisherNetworkStream = null;
+        }
+
+        foreach (TcpClient listener in listeners)
+            listener.Close();
+        listeners.Clear();
+        
         // Must be sent first as it may change how connections are handled
         SendSysCommand(SYSCOMMAND_CONNECTIONS_PARAMETERS, new SysCommand_ConnectionsParameters { keep_connections = keepConnections, timeout_in_s = networkTimeoutSeconds });
 
@@ -244,7 +275,11 @@ public class ROSConnection : MonoBehaviour
 
 
         SendServiceMessage<UnityHandshakeResponse>(HANDSHAKE_TOPIC_NAME, new UnityHandshakeRequest(overrideUnityIP, (ushort)unityPort), RosUnityHandshakeCallback);
-    }
+        foreach (SysCommand_Subscribe command in subscribersCommands)
+            SendSysCommand(SYSCOMMAND_SUBSCRIBE, command);
+        foreach (SysCommand_Publish command in publishersCommands)
+            SendSysCommand(SYSCOMMAND_PUBLISH, command);
+    }   
 
     void RosUnityHandshakeCallback(UnityHandshakeResponse response)
     {
@@ -271,7 +306,7 @@ public class ROSConnection : MonoBehaviour
         do
         {
             await Task.Yield();
-            Thread.Sleep(1);
+            //Thread.Sleep(1);
             //Debug.Log("start reading at : " + System.DateTime.Now.Millisecond);
             ReadMessage(networkStream);
             //Debug.Log("       stop reading at : " + System.DateTime.Now.Millisecond);
@@ -283,33 +318,43 @@ public class ROSConnection : MonoBehaviour
         {
             while (networkStream.CanRead && (!keepConnections || networkStream.DataAvailable))
             {
-                int offset = 0;
-
-                // Get first bytes to determine length of topic name
+                // Read and convert topic name size
                 byte[] rawTopicBytes = new byte[4];
-                networkStream.Read(rawTopicBytes, 0, rawTopicBytes.Length);
-                offset += 4;
+                int numberOfBytesRead = 0;
+                while (numberOfBytesRead < rawTopicBytes.Length)
+                {
+                    int bytesRead = networkStream.Read(rawTopicBytes, numberOfBytesRead, rawTopicBytes.Length - numberOfBytesRead);
+                    numberOfBytesRead += bytesRead;
+                }
                 int topicLength = BitConverter.ToInt32(rawTopicBytes, 0);
 
                 // Read and convert topic name
                 byte[] topicNameBytes = new byte[topicLength];
-                networkStream.Read(topicNameBytes, 0, topicNameBytes.Length);
-                offset += topicNameBytes.Length;
+                numberOfBytesRead = 0;
+                while (numberOfBytesRead < topicLength)
+                {
+                    int bytesRead = networkStream.Read(topicNameBytes, numberOfBytesRead, topicLength - numberOfBytesRead);
+                    numberOfBytesRead += bytesRead;
+                }
                 string topicName = Encoding.ASCII.GetString(topicNameBytes, 0, topicLength);
                 // TODO: use topic name to confirm proper received location
 
+                // Read and convert data size
                 byte[] full_message_size_bytes = new byte[4];
-                networkStream.Read(full_message_size_bytes, 0, full_message_size_bytes.Length);
-                offset += 4;
+                numberOfBytesRead = 0;
+                while (numberOfBytesRead < full_message_size_bytes.Length)
+                {
+                    int bytesRead = networkStream.Read(full_message_size_bytes, numberOfBytesRead, full_message_size_bytes.Length - numberOfBytesRead);
+                    numberOfBytesRead += bytesRead;
+                }
+
                 int full_message_size = BitConverter.ToInt32(full_message_size_bytes, 0);
 
                 byte[] readBuffer = new byte[full_message_size];
-                int numberOfBytesRead = 0;
-
-                while (networkStream.DataAvailable && numberOfBytesRead < full_message_size)
+                numberOfBytesRead = 0;
+                while (numberOfBytesRead < full_message_size)
                 {
                     int bytesRead = networkStream.Read(readBuffer, numberOfBytesRead, readBuffer.Length - numberOfBytesRead);
-                    offset += bytesRead;
                     numberOfBytesRead += bytesRead;
                 }
 
@@ -379,7 +424,8 @@ public class ROSConnection : MonoBehaviour
                 while (serverRunning && tcpListener != null)   //we wait for a connection
                 {
                     TcpClient tcpClient = await tcpListener.AcceptTcpClientAsync();
-
+                    if (keepConnections)
+                        listeners.Add(tcpClient);
                     Task task = StartHandleConnectionAsync(tcpClient);
                     // if already faulted, re-throw any error on the calling context
                     if (task.IsFaulted)
@@ -500,13 +546,13 @@ public class ROSConnection : MonoBehaviour
         Send(SYSCOMMAND_TOPIC_NAME, new RosUnitySysCommand(command, JsonUtility.ToJson(param)));
     }
 
-    struct SysCommand_Subscribe
+    protected struct SysCommand_Subscribe
     {
         public string topic;
         public string message_name;
     }
 
-    struct SysCommand_Publish
+    protected struct SysCommand_Publish
     {
         public string topic;
         public string message_name;
